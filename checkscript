@@ -3,10 +3,10 @@
 # Simple test for fcrypt (CS 4740/6740: Network Security)
 # Amirali Sanatinia (amirali@ccs.neu.edu)
 
-python fcrypt.py -e dest_public.der sender_private.pem big_buck_bunny.mp4 ciphertext_file
+python fcrypt.py -e dest_public.der sender_private.pem pgadmin.log ciphertext_file
 python fcrypt.py -d dest_private.der sender_public.pem ciphertext_file output_plaintext_file
 
-if ! diff -q big_buck_bunny.mp4 output_plaintext_file > /dev/null ; then
+if ! diff -q pgadmin.log output_plaintext_file > /dev/null ; then
   echo "FAIL"
   else echo "PASS!"
 fi

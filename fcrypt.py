@@ -1,6 +1,5 @@
 #!/usr/bin/python
 
-import sys
 import os
 import argparse
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -30,27 +29,22 @@ def handle_encrypt(args):
     message = open(args.input_file, 'rb').read()
     public_key = read_public_key_file(args.key1)
     private_key = read_private_key_file(args.key2)
-    encrypted_message, key, nonce = aesgcm_encrypt_message(message)
+    encrypted_message, key, nonce = aesgcm_encrypt_message_and_sign(
+        message, private_key)
     encrypted_key = rsa_encrypt_key(public_key, key)
     encrypted_nonce = rsa_encrypt_key(public_key, nonce)
-    signature = sign_message(encrypted_message, private_key)
     compose_file(encrypted_message, encrypted_key,
-                 encrypted_nonce, signature, args.output_file)
+                 encrypted_nonce, args.output_file)
 
 
 def handle_decrypt(args):
     public_key = read_public_key_file(args.key2)
     private_key = read_private_key_file(args.key1)
-    e_message, e_key, e_nonce, sig = decompose_file(args.input_file)
+    e_message, e_key, e_nonce = decompose_file(args.input_file)
     d_key = rsa_decrypt_key(private_key, e_key)
     d_nonce = rsa_decrypt_key(private_key, e_nonce)
-    d_message = aesgcm_decrypt_message(e_message, d_key, d_nonce)
-    try:
-        validate_message(e_message, sig, public_key)
-    except InvalidSignature as e:
-        print("Failure to validate message may have been"
-              "tampered with or corrupted in transit: {}").format(e)
-        return
+    d_message = aesgcm_decrypt_message_and_validate(
+        e_message, d_key, d_nonce, public_key)
     open(args.output_file, 'wb').write(d_message)
 
 
@@ -91,8 +85,9 @@ def read_public_key_file(filename):
         return public_key
 
 
-def aesgcm_encrypt_message(message):
-    data = message
+def aesgcm_encrypt_message_and_sign(message, private_key):
+    signature = sign_message(message, private_key)
+    data = message + "*-*-*-*-*-*" + signature
     key = AESGCM.generate_key(bit_length=128)
     aesgcm = AESGCM(key)
     nonce = os.urandom(12)
@@ -100,18 +95,20 @@ def aesgcm_encrypt_message(message):
     return (ct, key, nonce)
 
 
-def aesgcm_decrypt_message(data, key, nonce):
+def aesgcm_decrypt_message_and_validate(data, key, nonce, public_key):
     aesgcm = AESGCM(key)
     plain_text = aesgcm.decrypt(nonce, data, None)
-    return plain_text
+    data, signature = plain_text.split("*-*-*-*-*-*")
+    validate_message(data, signature, public_key)
+    return data
 
 
 def rsa_encrypt_key(public_key, data):
     ct = public_key.encrypt(
         data,
         padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(),
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
             label=None
         )
     )
@@ -122,8 +119,8 @@ def rsa_decrypt_key(private_key, data):
     plain_key = private_key.decrypt(
         data,
         padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(),
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
             label=None
         )
     )
@@ -143,20 +140,25 @@ def sign_message(message, private_key):
 
 
 def validate_message(message, signature, public_key):
-    public_key.verify(
-        signature,
-        message,
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ),
-        hashes.SHA256()
-    )
+    try:
+        public_key.verify(
+            signature,
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+    except InvalidSignature as e:
+        print("Failure to validate message may have been"
+              "tampered with or corrupted in transit: {}").format(e)
+        return
 
 
-def compose_file(em, ek, en, s, output):
-    full_message = "{}*-*-*-*-*-*{}*-*-*-*-*-*{}*-*-*-*-*-*{}".format(
-        em, ek, en, s)
+def compose_file(em, ek, en, output):
+    full_message = "{}*-*-*-*-*-*{}*-*-*-*-*-*{}".format(
+        em, ek, en)
     f = open(output, 'wb')
     f.write(full_message)
     f.close()
@@ -165,8 +167,8 @@ def compose_file(em, ek, en, s, output):
 def decompose_file(filename):
     f = open(filename, 'rb')
     file = f.read()
-    em, ek, en, sig = file.split('*-*-*-*-*-*')
-    return (em, ek, en, sig)
+    em, ek, en = file.split('*-*-*-*-*-*')
+    return (em, ek, en)
 
 
 if __name__ == '__main__':
